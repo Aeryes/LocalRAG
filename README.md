@@ -1,4 +1,4 @@
-# LocalRAG: Autonomous Research Agent (Staff Edition)
+# LocalRAG: Autonomous Research Agent
 
 [![CI/CD](https://img.shields.io/badge/CI%2FCD-DeepEval-green)](./tests)
 [![Stack](https://img.shields.io/badge/Stack-LangGraph%20%7C%20Qdrant%20%7C%20Docker-blue)](./docker-compose.yml)
