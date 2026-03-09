@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   ollama:
     image: ollama/ollama:latest
@@ -21,6 +19,7 @@ services:
               count: 1
               capabilities: [gpu]
     restart: always
+
   ollama-puller:
     image: ollama/ollama:latest
     container_name: ollama_puller
@@ -30,6 +29,7 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+
   qdrant:
     image: qdrant/qdrant
     container_name: qdrant_container
@@ -38,6 +38,21 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
     restart: always
+
+  filebrowser:
+    image: filebrowser/filebrowser:v2.48.0
+    container_name: file_manager
+    user: "0:0"
+    ports:
+      - "8080:80"
+    environment:
+      - FB_NOAUTH=true
+    volumes:
+      - shared_data:/srv
+      - filebrowser_db:/database
+      - filebrowser_config:/config
+    restart: always
+
   app:
     build: .
     container_name: rag_app
@@ -56,6 +71,11 @@ services:
         condition: service_started
     volumes:
       - .:/app
+      - shared_data:/app/docs # App looks at the EXACT SAME shared named volume
+
 volumes:
   ollama_storage:
   qdrant_storage:
+  shared_data:
+  filebrowser_db:
+  filebrowser_config:

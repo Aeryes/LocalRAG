@@ -15,3 +15,8 @@ pytest
 arize-phoenix
 openinference-instrumentation-langchain
 flashrank
+watchdog
+pymupdf
+langgraph-checkpoint-sqlite
+networkx
+scipy
