@@ -45,8 +45,9 @@ subgraph DockerServices [Docker Compose Network]
         WDog[<b>Watchdog Thread</b><br/>PollingObserver]:::container_node
         
         subgraph InternalGraph [LangGraph Agent]
-            QueryNode(Transform Query):::internal_agent
+            QueryNode(Plan Query & Tools):::internal_agent
             RetNode(Retrieve / Re-Rank):::internal_agent
+            ToolNode(Execute Tools):::internal_agent
             GenNode(Generate):::internal_agent
             GradeNode{Hallucination<br/>Grader?}:::internal_agent
             MemNode(Update Memory<br/>Facts & Graph):::internal_agent
@@ -54,7 +55,7 @@ subgraph DockerServices [Docker Compose Network]
     end
 
     subgraph ContainerOllama [Container: ollama_container]
-        Llama(Ollama API<br/>llama3:8b):::container_node
+        Llama(Ollama API<br/>llama3.1:8b):::container_node
     end
 end
 
@@ -84,9 +85,12 @@ Llama --> Qd
 %% Retrieval & Agent Flow
 ST_UI -->|Query + Thread ID| InternalGraph
 QueryNode --> RetNode
+QueryNode --> ToolNode
 RetNode -->|Vector & Graph Search| Qd
 RetNode -->|Read GraphML| KG
+ToolNode -.->|Fetch Live Data| LiveAPIs([External APIs / MQTT])
 RetNode --> GenNode
+ToolNode --> GenNode
 GenNode -->|Contextual Answer| GradeNode
 GradeNode -.->|Hallucination Detected| GenNode
 GradeNode -->|Verified Answer| MemNode
@@ -144,6 +148,24 @@ Implements **Test-Driven Development (TDD)** for RAG.
 ### 8. **Dynamic Multi-Path Context Filtering**
 * **Targeted Research:** Users can select multiple folders or specific files from the sidebar to strictly narrow the vector search space.
 * **Auto-Push Verification:** When a directory is selected, the system automatically cross-references the files against Qdrant and indexes any missing data on the fly.
+
+### 9. **Agentic Tool Calling (Live Data Integration)**
+* **Dynamic Plugin Registry:** The system automatically discovers and registers any tools placed in the `src/tools/` directory using an import hook architecture.
+* **Parallel Execution:** Custom tools (e.g. fetching live MQTT sensor data, querying live APIs, or running scripts) are executed in parallel with standard vector and knowledge graph retrieval to minimize latency.
+* **Live Data Prioritization:** The generation prompt natively prioritizes live data from agentic tool outputs over historical text chunks.
+
+**Sample Tool Integration:**
+Simply drop a Python file into `src/tools/` using the LangChain `@tool` decorator:
+```python
+# src/tools/weather_tool.py
+from langchain_core.tools import tool
+
+@tool
+def get_weather(location: str) -> str:
+    """Get the current weather for a location."""
+    # Fetch from your live API...
+    return f"The weather in {location} is 72°F and sunny."
+```
 
 LangGraph Checkpointing: Uses SqliteSaver to maintain thread state. You can close the browser and resume exactly where you left off.
 ---

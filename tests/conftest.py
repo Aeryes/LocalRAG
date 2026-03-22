@@ -474,15 +474,35 @@ class _FakeLanggraphGraph(types.ModuleType):
         self.END = "END"
 
 
-class _FakeSqliteSaver:
+class _FakePostgresSaver:
     def __init__(self, conn):
         self.conn = conn
 
+    def setup(self):
+        pass
 
-class _FakeLanggraphCheckpointSqlite(types.ModuleType):
+
+class _FakeLanggraphCheckpointPostgres(types.ModuleType):
     def __init__(self):
-        super().__init__("langgraph.checkpoint.sqlite")
-        self.SqliteSaver = _FakeSqliteSaver
+        super().__init__("langgraph.checkpoint.postgres")
+        self.PostgresSaver = _FakePostgresSaver
+
+
+class _FakeConnectionPool:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def connection(self):
+        return _NoOpContext()
+
+    def open(self):
+        pass
+
+
+class _FakePsycopgPool(types.ModuleType):
+    def __init__(self):
+        super().__init__("psycopg_pool")
+        self.ConnectionPool = _FakeConnectionPool
 
 
 class _FakeGraph:
@@ -525,7 +545,6 @@ class _FakeNetworkX(types.ModuleType):
 
 
 def _install_fake_modules():
-    fake_streamlit = _FakeStreamlit()
     fake_phoenix = _FakePhoenix()
     fake_phoenix_otel = _FakePhoenixOtel()
     fake_openinference = _FakeOpenInference()
@@ -540,10 +559,10 @@ def _install_fake_modules():
     fake_qdrant_http = _FakeQdrantHttpModule(fake_rest)
     fake_flashrank = _FakeFlashrank()
     fake_langgraph_graph = _FakeLanggraphGraph()
-    fake_langgraph_checkpoint_sqlite = _FakeLanggraphCheckpointSqlite()
+    fake_langgraph_checkpoint_postgres = _FakeLanggraphCheckpointPostgres()
+    fake_psycopg_pool = _FakePsycopgPool()
     fake_networkx = _FakeNetworkX()
 
-    sys.modules["streamlit"] = fake_streamlit
     sys.modules["phoenix"] = fake_phoenix
     sys.modules["phoenix.otel"] = fake_phoenix_otel
     sys.modules["openinference.instrumentation.langchain"] = fake_openinference
@@ -558,7 +577,8 @@ def _install_fake_modules():
     sys.modules["qdrant_client.http.models"] = fake_rest
     sys.modules["flashrank"] = fake_flashrank
     sys.modules["langgraph.graph"] = fake_langgraph_graph
-    sys.modules["langgraph.checkpoint.sqlite"] = fake_langgraph_checkpoint_sqlite
+    sys.modules["langgraph.checkpoint.postgres"] = fake_langgraph_checkpoint_postgres
+    sys.modules["psycopg_pool"] = fake_psycopg_pool
     sys.modules["networkx"] = fake_networkx
 
 
@@ -569,6 +589,8 @@ def _load_app_module():
     candidate_paths = [
         repo_root / "app.py",
         repo_root / "src" / "app.py",
+        repo_root / "server.py",
+        repo_root / "src" / "server.py",
     ]
 
     app_path = None
@@ -578,7 +600,7 @@ def _load_app_module():
             break
 
     if app_path is None:
-        raise FileNotFoundError("Could not find app.py in repository root or src/")
+        raise FileNotFoundError("Could not find app.py or server.py in repository root or src/")
 
     spec = importlib.util.spec_from_file_location("app_under_test", app_path)
     module = importlib.util.module_from_spec(spec)

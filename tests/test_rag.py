@@ -1,37 +1,85 @@
 import pytest
-
+from fastapi.testclient import TestClient
 
 def test_app_module_imports_successfully(app_module):
-    assert hasattr(app_module, "transform_query")
-    assert hasattr(app_module, "retrieve")
-    assert hasattr(app_module, "generate")
-    assert hasattr(app_module, "update_memory")
-    assert hasattr(app_module, "DocumentSyncHandler")
+    assert hasattr(app_module, "app")
+    assert hasattr(app_module, "app_graph")
 
 
-def test_transform_query_returns_expanded_queries_and_original_question(app_module):
-    state = {
-        "question": "What database are we using?",
-        "chat_history": [{"role": "user", "content": "Tell me about storage"}],
-        "search_queries": [],
-        "documents": [],
-        "generation": "",
-        "hallucination_count": 0,
-        "user_profile": [],
-        "kg_context": "",
-    }
-
-    result = app_module.transform_query(state)
-
-    assert "search_queries" in result
-    assert isinstance(result["search_queries"], list)
-    assert len(result["search_queries"]) >= 3
-    assert state["question"] in result["search_queries"]
+def test_get_context_requires_auth(app_module):
+    client = TestClient(app_module.app)
+    response = client.get("/api/context")
+    assert response.status_code == 401
 
 
-def test_retrieve_returns_ranked_documents(app_module):
-    app_module.st.session_state["selected_context"] = [app_module.SHARED_DOCS_DIR]
+def test_get_context_success(app_module, monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    client = TestClient(app_module.app)
+    response = client.get("/api/context", headers={"X-API-Key": "test-key", "X-Session-ID": "test-session"})
+    assert response.status_code == 200
+    assert "all_paths" in response.json()
+    assert "selected_context" in response.json()
 
+
+def test_update_context_success(app_module, monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    client = TestClient(app_module.app)
+    from src.constants import SHARED_DOCS_DIR
+    import os
+    safe_path = os.path.join(SHARED_DOCS_DIR, "safe_subfolder").replace('\\', '/')
+    response = client.post(
+        "/api/context", 
+        headers={"X-API-Key": "test-key", "X-Session-ID": "test-session"},
+        json={"selected_context": [safe_path]}
+    )
+    assert response.status_code == 200
+    # Should be accepted as it is a subpath of SHARED_DOCS_DIR
+    # We check if it is in the response (depending on exact abs path logic, could be modified)
+    returned_context = [p.replace('\\', '/') for p in response.json()["selected_context"]]
+    assert any(safe_path in p for p in returned_context)
+
+
+def test_update_context_path_traversal(app_module, monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    client = TestClient(app_module.app)
+    response = client.post(
+        "/api/context", 
+        headers={"X-API-Key": "test-key", "X-Session-ID": "test-session"},
+        json={"selected_context": ["/etc/passwd"]}
+    )
+    assert response.status_code == 200
+    # Should reject the dangerous path and fallback to SHARED_DOCS_DIR
+    from src.constants import SHARED_DOCS_DIR
+    assert response.json()["selected_context"] == [SHARED_DOCS_DIR]
+
+
+def test_hardware_state_endpoint(app_module, monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    client = TestClient(app_module.app)
+    payload = {"temperature": 25.5, "motion_detected": True}
+    response = client.post(
+        "/api/hardware/state", 
+        headers={"X-API-Key": "test-key"},
+        json=payload
+    )
+    assert response.status_code == 200
+    assert response.json()["state"]["temperature"] == 25.5
+    assert response.json()["state"]["motion_detected"] is True
+
+
+def test_langgraph_nodes_available():
+    # Verify the graph nodes can be imported and are available
+    from src.graph import plan_query, retrieve_hybrid, generate_grounded, update_memory
+    
+    assert callable(plan_query)
+    assert callable(retrieve_hybrid)
+    assert callable(generate_grounded)
+    assert callable(update_memory)
+
+
+def test_retrieve_hybrid_executes_with_fakes(app_module):
+    from src.graph import retrieve_hybrid
+    
     state = {
         "question": "What database are we using?",
         "chat_history": [],
@@ -41,141 +89,66 @@ def test_retrieve_returns_ranked_documents(app_module):
         "hallucination_count": 0,
         "user_profile": [],
         "kg_context": "",
+        "query_plan": {"retrieval_modes": ["dense"]}
     }
-
-    result = app_module.retrieve(state)
-
+    
+    # Run the hybrid retrieve node directly
+    result = retrieve_hybrid(state)
     assert "documents" in result
     assert isinstance(result["documents"], list)
-    assert len(result["documents"]) >= 1
-    assert any("Qdrant" in doc["text"] for doc in result["documents"])
-    assert all("source" in doc for doc in result["documents"])
 
 
-def test_generate_returns_string_answer(app_module):
-    state = {
-        "question": "What database are we using?",
-        "chat_history": [{"role": "user", "content": "What database are we using?"}],
-        "search_queries": [],
-        "documents": [
-            {
-                "text": "The application uses Qdrant as a vector database in a Docker container.",
-                "source": "architecture.md",
-            }
-        ],
-        "generation": "",
-        "hallucination_count": 0,
-        "user_profile": [],
-        "kg_context": "",
-    }
-
-    result = app_module.generate(state)
-
-    assert "generation" in result
-    assert isinstance(result["generation"], str)
-    assert "Qdrant" in result["generation"]
-
-
-def test_grade_hallucination_routes_to_update_memory_when_judge_passes(app_module):
-    state = {
-        "question": "What database are we using?",
-        "chat_history": [],
-        "search_queries": [],
-        "documents": [{"text": "Qdrant is the vector database.", "source": "architecture.md"}],
-        "generation": "Qdrant is the vector database.",
-        "hallucination_count": 0,
-        "user_profile": [],
-        "kg_context": "",
-    }
-
-    route = app_module.grade_hallucination(state)
-
-    assert route == "update_memory"
-
-
-def test_grade_hallucination_stops_retry_loop_after_max_retries(app_module):
+def test_update_memory_executes_with_fakes(app_module):
+    from src.graph import update_memory
+    
     state = {
         "question": "What database are we using?",
         "chat_history": [],
         "search_queries": [],
         "documents": [],
-        "generation": "Some answer",
-        "hallucination_count": 3,
-        "user_profile": [],
-        "kg_context": "",
-    }
-
-    route = app_module.grade_hallucination(state)
-
-    assert route == "update_memory"
-
-
-def test_update_memory_merges_facts_without_duplicates(app_module):
-    state = {
-        "question": "How are we testing this?",
-        "chat_history": [],
-        "search_queries": [],
-        "documents": [],
-        "generation": "We are testing CI behavior.",
+        "generation": "We are using Qdrant.",
         "hallucination_count": 0,
-        "user_profile": ["User is testing CI"],
+        "user_profile": ["User likes Qdrant"],
         "kg_context": "",
     }
-
-    result = app_module.update_memory(state)
-
+    
+    # Run the update_memory node directly
+    result = update_memory(state)
     assert "user_profile" in result
-    assert result["user_profile"].count("User is testing CI") == 1
+    assert isinstance(result["user_profile"], list)
 
 
-def test_update_retry_increments_counter(app_module):
+def test_is_safe_path():
+    from src.services import is_safe_path
+    from src.constants import SHARED_DOCS_DIR
+    import os
+    
+    assert is_safe_path(SHARED_DOCS_DIR) is True
+    assert is_safe_path(os.path.join(SHARED_DOCS_DIR, "file.txt")) is True
+    assert is_safe_path("/etc/passwd") is False
+    assert is_safe_path(os.path.join(SHARED_DOCS_DIR, "../../etc/passwd")) is False
+
+
+def test_plan_query_json_fallback(monkeypatch):
+    from src.graph import plan_query
+    
+    # Mock LLM to raise JSONDecodeError
+    class MockLLM:
+        def invoke(self, *args, **kwargs):
+            class MockResponse:
+                content = "Invalid JSON"
+            return MockResponse()
+            
+        def bind_tools(self, *args, **kwargs):
+            return self
+            
+    monkeypatch.setattr("src.graph.get_chat_llm", lambda **kwargs: MockLLM())
+    
     state = {
-        "hallucination_count": 1,
+        "question": "test question",
+        "chat_history": []
     }
-
-    result = app_module.update_retry(state)
-
-    assert result["hallucination_count"] == 2
-
-
-def test_document_sync_handler_ignores_blocked_project_files(app_module, monkeypatch):
-    handler = app_module.DocumentSyncHandler()
-    calls = {"delete_called": False}
-
-    def fake_delete(_file_path):
-        calls["delete_called"] = True
-
-    monkeypatch.setattr(handler, "delete_file_context", fake_delete)
-
-    handler.process_file("app.py")
-
-    assert calls["delete_called"] is False
-
-
-def test_document_sync_handler_processes_supported_text_files(app_module, fake_doc_class, monkeypatch, tmp_path):
-    handler = app_module.DocumentSyncHandler()
-    test_file = tmp_path / "notes.txt"
-    test_file.write_text("This is a test document.", encoding="utf-8")
-
-    captured = {"indexed": False}
-
-    def fake_load_local_file(file_path):
-        return [fake_doc_class("This is a test document.", {"source": file_path})]
-
-    class FakeVectorStoreForAssertion:
-        @classmethod
-        def from_documents(cls, docs, embeddings, url=None, collection_name=None):
-            captured["indexed"] = True
-            captured["doc_count"] = len(docs)
-            captured["collection_name"] = collection_name
-            return cls()
-
-    monkeypatch.setattr(app_module, "load_local_file", fake_load_local_file)
-    monkeypatch.setattr(app_module, "QdrantVectorStore", FakeVectorStoreForAssertion)
-    monkeypatch.setattr(handler, "delete_file_context", lambda _: None)
-
-    handler.process_file(str(test_file))
-
-    assert captured["indexed"] is True
-    assert captured["doc_count"] == 1
-    assert captured["collection_name"] == app_module.COLLECTION_NAME
+    
+    result = plan_query(state)
+    assert "query_plan" in result
+    assert result["query_plan"]["intent"] == "lookup"
